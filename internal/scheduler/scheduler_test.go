@@ -1,0 +1,109 @@
+package scheduler
+
+import (
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/bruhanda/olx-monitoring/internal/parser"
+)
+
+// Regression test: the previous hand-rolled replaceAll looped forever on "&"
+// because it kept finding the ampersand of the just-inserted "&amp;".
+func TestEscapeTerminatesOnAmpersand(t *testing.T) {
+	done := make(chan string, 1)
+	go func() {
+		done <- escape(`Dr. Martens & Co <b>"1460"</b>`)
+	}()
+
+	select {
+	case got := <-done:
+		want := "Dr. Martens &amp; Co &lt;b&gt;&#34;1460&#34;&lt;/b&gt;"
+		if got != want {
+			t.Fatalf("escape() = %q, want %q", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("escape() did not terminate")
+	}
+}
+
+func TestRenderWithNameUAEscapesEveryField(t *testing.T) {
+	out := renderWithNameUA(parser.Item{
+		Title:    "Куртка <M&M>",
+		Price:    "1 000 грн",
+		Location: "Київ, Поділ",
+		URL:      "https://www.olx.ua/d/uk/obyavlenie/x.html?a=1&b=2",
+	}, "olx", "Пошук & тест")
+
+	if strings.Contains(out, "<M&M>") || strings.Contains(out, "a=1&b=2") {
+		t.Fatalf("unescaped content in message: %s", out)
+	}
+	for _, want := range []string{"&lt;M&amp;M&gt;", "a=1&amp;b=2", "Пошук &amp; тест", "1 000 грн"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("message %q is missing %q", out, want)
+		}
+	}
+}
+
+func TestNextOccurrence(t *testing.T) {
+	loc := time.FixedZone("EET", 2*60*60)
+	times := []string{"11:00", "15:00", "20:00"}
+
+	cases := []struct {
+		name string
+		now  time.Time
+		want time.Time
+	}{
+		{"before first", time.Date(2026, 8, 20, 9, 30, 0, 0, loc), time.Date(2026, 8, 20, 11, 0, 0, 0, loc)},
+		{"between slots", time.Date(2026, 8, 20, 12, 0, 0, 0, loc), time.Date(2026, 8, 20, 15, 0, 0, 0, loc)},
+		{"exactly on slot", time.Date(2026, 8, 20, 15, 0, 0, 0, loc), time.Date(2026, 8, 20, 15, 0, 0, 0, loc)},
+		{"after last rolls over", time.Date(2026, 8, 20, 21, 0, 0, 0, loc), time.Date(2026, 8, 21, 11, 0, 0, 0, loc)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nextOccurrence(tc.now, times); !got.Equal(tc.want) {
+				t.Fatalf("nextOccurrence(%s) = %s, want %s", tc.now, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsAdItem(t *testing.T) {
+	cases := []struct {
+		title string
+		price string
+		want  bool
+	}{
+		{"Черевики Dr. Martens 1460", "5 000 грн", false},
+		{"ТОП оголошення", "5 000 грн", true},
+		{"Робота у Польщі", "", true},
+		{"ab", "", true},
+		{"css-1abcdef", "", true},
+	}
+	for _, tc := range cases {
+		got := isAdItem(parser.Item{Title: tc.title, Price: tc.price})
+		if got != tc.want {
+			t.Errorf("isAdItem(%q) = %v, want %v", tc.title, got, tc.want)
+		}
+	}
+}
+
+func TestRunSummary(t *testing.T) {
+	now := time.Date(2026, 8, 20, 15, 0, 0, 0, time.UTC)
+
+	quiet := runSummary(now, []jobResult{{label: "a"}, {label: "b"}})
+	if !strings.Contains(quiet, "Нових оголошень: 0") || strings.Contains(quiet, "Помилок") {
+		t.Fatalf("unexpected quiet summary: %s", quiet)
+	}
+
+	noisy := runSummary(now, []jobResult{
+		{label: "a", new: 3},
+		{label: "b & c", err: errors.New("unexpected status: 403")},
+	})
+	for _, want := range []string{"Пошуків: 2", "Нових оголошень: 3", "Помилок: 1", "b &amp; c", "403"} {
+		if !strings.Contains(noisy, want) {
+			t.Fatalf("summary %q is missing %q", noisy, want)
+		}
+	}
+}
