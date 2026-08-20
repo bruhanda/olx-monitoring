@@ -226,7 +226,7 @@ scheduler.New(store, tg, interval, jobProvider).
 Пошуків: 13
 Нових оголошень: 4
 Помилок: 1
-• Черевики Loake: unexpected status: 403
+• Черевики Dr. Martens: unexpected status: 403
 ```
 
 Формат картки (`renderWithNameUA`):
@@ -309,8 +309,8 @@ Description=Info Parser
 After=network-online.target
 
 [Service]
-WorkingDirectory=/home/brukhanda/go/src/info-parser
-ExecStart=/home/brukhanda/go/src/info-parser/info-parser
+WorkingDirectory=/opt/olx-monitoring
+ExecStart=/opt/olx-monitoring/info-parser
 Restart=always
 RestartSec=10
 

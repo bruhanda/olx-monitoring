@@ -63,14 +63,14 @@ go build ./cmd/info-parser
 ## Приклад нотифікації
 
 ```
-🔍 olx [Черевики Loake]
-Посилання: https://www.olx.ua/uk/list/q-loake/
+🔍 olx [Черевики Dr. Martens]
+Посилання: https://www.olx.ua/uk/list/q-dr-martens-1460/
 Всього оголошень: 34
 Не рекламних: 28
 Нових: 2
 
-📌 [olx] Черевики Loake
-🏷️ Назва: Туфлі Loake 1880 Aldwych, 42
+📌 [olx] Черевики Dr. Martens
+🏷️ Назва: Черевики Dr. Martens 1460, розмір 42
 💰 Ціна: 4 200 грн
 📍 Локація: Київ, Печерський
 🔗 Посилання: https://www.olx.ua/d/uk/obyavlenie/...
