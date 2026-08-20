@@ -3,6 +3,7 @@
 [![CI](https://github.com/bruhanda/olx-monitoring/actions/workflows/ci.yml/badge.svg)](https://github.com/bruhanda/olx-monitoring/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.23%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![SQLite](https://img.shields.io/badge/storage-SQLite-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 Сервіс на Go, який стежить за збереженими пошуками на OLX і надсилає в Telegram
 **лише нові** оголошення. Пошуки додаються через веб-форму, дедуплікація — у
@@ -141,3 +142,7 @@ gofmt -l ./cmd ./internal   # має бути порожньо
 
 Архітектура, опис кожного пакета, життєвий цикл даних, відомі обмеження та
 історія виправлених дефектів — [DOCS.md](DOCS.md).
+
+## Ліцензія
+
+[MIT](LICENSE) © bruhanda
