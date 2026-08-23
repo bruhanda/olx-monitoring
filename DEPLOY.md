@@ -35,10 +35,14 @@ dig +short @8.8.8.8 olx.kozelets.pp.ua      # має бути 188.245.71.3
 ssh deploy@188.245.71.3 'mkdir -p ~/server/olx.kozelets.pp.ua'
 
 rsync -avz --delete \
-  --exclude=.git --exclude=data --exclude=.env --exclude=.env.production \
-  --exclude=info-parser --exclude=.idea --exclude=.vscode \
+  --exclude=.git --exclude=/data --exclude=/.env --exclude=/.env.production \
+  --exclude=/info-parser --exclude=.idea --exclude=.vscode \
   ~/go/src/info-parser/ deploy@188.245.71.3:/home/deploy/server/olx.kozelets.pp.ua/
 ```
+
+⚠️ **Слеш перед іменем обов'язковий.** `--exclude=info-parser` без нього збігається
+з будь-яким компонентом шляху — зокрема з каталогом `cmd/info-parser/`, і збірка
+падає з `stat /src/cmd/info-parser: directory not found`.
 
 ## 3. Секрети
 
@@ -73,6 +77,36 @@ curl -s -o /dev/null -w '%{http_code}\n' https://olx.kozelets.pp.ua/          # 
 ```
 
 Сертифікат Let's Encrypt Traefik візьме сам за 10–30 секунд після старту.
+
+Рядок `Warning: .env file not found` у логах — очікуваний: конфігурація
+приходить із `env_file`, а не з файла `.env` усередині контейнера.
+
+## 5.1. Прогрів бази (важливо при першому запуску)
+
+Якщо база порожня або в ній мало оголошень, перший же запуск вважатиме новим
+майже все і завалить чат (до `MAX_ITEMS_PER_RUN` × кількість пошуків
+повідомлень). Прогрів робиться одноразовим контейнером із **навмисно недійсним
+токеном**: оголошення зберігаються в базу, а відправки падають з 401 і в чат
+нічого не йде.
+
+```bash
+cd ~/server/olx.kozelets.pp.ua/docker
+docker run -d --name olxmon_seed --env-file ../.env.production \
+  -e TELEGRAM_BOT_TOKEN=0:seed-run-no-telegram \
+  -e DATABASE_PATH=/data/info-parser.db -e TZ=Europe/Kyiv \
+  -e DAILY_NOTIFY_TIMES=none -e POLL_INTERVAL_SEC=86400 -e MAX_ITEMS_PER_RUN=1 \
+  -e HTTP_ADDR=:8099 \
+  -v olxmon_olxmon_data:/data olxmon:prod
+
+docker logs -f olxmon_seed            # чекати рядки "N items, M non-ad, K new"
+docker rm -f olxmon_seed              # прибрати після проходу всіх пошуків
+docker compose -f docker-compose.prod.yml start
+```
+
+`DAILY_NOTIFY_TIMES=none` не проходить валідацію `HH:MM`, тому список часів
+порожній і сервіс робить один прогін одразу після старту, а далі спить
+`POLL_INTERVAL_SEC`. Окремий `HTTP_ADDR` — щоб не конфліктувати з основним
+контейнером.
 
 ## 6. Перенести наявну базу (опційно)
 
