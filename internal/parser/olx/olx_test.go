@@ -131,3 +131,57 @@ func TestFetchRejectsNon200(t *testing.T) {
 		t.Fatalf("Fetch() error = %v, want status 403", err)
 	}
 }
+
+// OLX інлайнить emotion-CSS у <style> прямо всередині <a> із заголовком.
+// goquery.Text() включає вміст <style>, тож заголовок ставав CSS і картка
+// мовчки зникала зі звіту.
+const cardWithInlineStyle = `<html><body>
+<p data-testid="total-count">1</p>
+<div data-testid="l-card">
+  <style data-emotion="css ri9uxm">.css-ri9uxm{height:100%;background:var(--colorsBackgroundPrimary);}</style>
+  <a href="/d/uk/obyavlenie/olimpiyka-reebok-IDabc.html?search_reason=search%7Corganic">
+    <style data-emotion="css hvzem4">.css-hvzem4{display:flex;flex-direction:row;}</style>
+    Олімпійка Reebok чоловіча, розмір S
+  </a>
+  <p data-testid="ad-price">450 грн</p>
+  <p>Київ, Оболонь</p>
+</div>
+</body></html>`
+
+func TestParseHTMLIgnoresInlineStyleTags(t *testing.T) {
+	o := NewWithName(http.DefaultClient, "", "https://www.olx.ua/uk/list/q-reebok/", "Reebok")
+	items := o.parseHTML(parse(t, o, cardWithInlineStyle))
+
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1 — картку з інлайновим <style> відкинуто", len(items))
+	}
+	if items[0].Title != "Олімпійка Reebok чоловіча, розмір S" {
+		t.Errorf("title = %q", items[0].Title)
+	}
+	if items[0].Price != "450 грн" {
+		t.Errorf("price = %q", items[0].Price)
+	}
+}
+
+// Кириличні запити приходять percent-encoded; без декодування жоден заголовок
+// не збігався з ключовими словами і всі картки вважались «альтернативними».
+func TestExtractSearchKeywordsDecodesCyrillic(t *testing.T) {
+	raw := "https://www.olx.ua/uk/moda-i-stil/muzhskaya-odezhda/q-%D0%BE%D0%BB%D1%96%D0%BC%D0%BF%D1%96%D0%B9%D0%BA%D0%B0-reebok/?currency=UAH"
+	o := NewWithName(http.DefaultClient, "", raw, "Олімпійка Reebok")
+
+	got := o.extractSearchKeywords()
+	want := []string{"олімпійка", "reebok"}
+	if len(got) != len(want) {
+		t.Fatalf("keywords = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("keywords = %v, want %v", got, want)
+		}
+	}
+
+	// Оголошення без латинської назви бренду більше не відкидається.
+	if o.isAlternativeListing("Олімпійка чоловіча спортивна, розмір S", "/d/uk/obyavlenie/x.html") {
+		t.Error("оголошення з кириличним ключовим словом відкинуто як альтернативне")
+	}
+}

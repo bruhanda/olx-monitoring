@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -106,7 +107,14 @@ func (o *OLX) parseHTML(doc *goquery.Document) []parser.Item {
 		}
 	}
 
-	doc.Find("[data-testid='l-card']").Each(func(i int, s *goquery.Selection) {
+	doc.Find("[data-testid='l-card']").Each(func(i int, card *goquery.Selection) {
+		// OLX інлайнить emotion-CSS у <style> всередині самої картки, зокрема
+		// всередині <a> із заголовком. goquery.Text() включає вміст <style>,
+		// тож без цього кроку заголовок перетворюється на CSS і картка
+		// відкидається як сміття.
+		s := card.Clone()
+		s.Find("style, script, noscript").Remove()
+
 		if debug {
 			html, _ := s.Html()
 			if len(html) > 500 {
@@ -265,6 +273,12 @@ func (o *OLX) extractSearchKeywords() []string {
 		if len(parts) > 1 {
 			query := strings.Split(parts[1], "/")[0]
 			query = strings.Split(query, "?")[0]
+			// Кириличні запити приходять percent-encoded ("%D0%BE..."), і без
+			// декодування жоден заголовок із ними не збігається — усі картки
+			// відкидались би як «альтернативні».
+			if decoded, err := url.QueryUnescape(query); err == nil {
+				query = decoded
+			}
 			// Split by hyphens and underscores
 			for _, part := range strings.FieldsFunc(query, func(r rune) bool {
 				return r == '-' || r == '_'
