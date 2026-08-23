@@ -1,0 +1,48 @@
+# ⚠️ name: обов'язковий — без нього Compose бере ім'я проєкту з каталогу
+# ("docker" для всіх проєктів на цьому сервері), і `--remove-orphans`
+# зносить чужі контейнери. Див. SERVER_SETUP.md, розділ 4.1.
+name: olxmon
+
+# Мережа `proxy` — external, її створює спільна інфра. Портів назовні не
+# світимо: увесь трафік іде через Traefik.
+
+services:
+    olxmon_app:
+        build:
+            context: ..
+            dockerfile: Dockerfile
+        image: olxmon:prod
+        container_name: olxmon_app
+        restart: unless-stopped
+        env_file: ../.env.production
+        environment:
+            DATABASE_PATH: /data/info-parser.db
+            HTTP_ADDR: ":8088"
+            TZ: Europe/Kyiv
+        volumes:
+            - olxmon_data:/data
+        networks:
+            - proxy
+        # Сервіс маленький; ліміт страхує сервер від несподіванок.
+        mem_limit: 192m
+        cpus: 0.5
+        logging:
+            driver: json-file
+            options:
+                max-size: "10m"
+                max-file: "3"
+        labels:
+            - traefik.enable=true
+            - traefik.docker.network=proxy
+            - traefik.http.routers.olxmon.rule=Host(`olx.kozelets.pp.ua`)
+            - traefik.http.routers.olxmon.entrypoints=websecure
+            - traefik.http.routers.olxmon.tls.certresolver=letsencrypt
+            - traefik.http.routers.olxmon.middlewares=security-headers@file,compress@file,rate-limit@file
+            - traefik.http.services.olxmon.loadbalancer.server.port=8088
+
+networks:
+    proxy:
+        external: true
+
+volumes:
+    olxmon_data:

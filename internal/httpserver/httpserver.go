@@ -46,6 +46,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/deactivate", s.deactivateSearchHandler)
 	mux.HandleFunc("/activate", s.activateSearchHandler)
 	mux.HandleFunc("/edit", s.editSearchHandler)
+	mux.HandleFunc(healthPath, healthHandler)
 	return s.withAuth(mux)
 }
 
@@ -66,6 +67,15 @@ func (s *Server) Start(addr string) error {
 	return srv.ListenAndServe()
 }
 
+// healthPath is served without authentication so that a reverse proxy or an
+// external monitor can check liveness.
+const healthPath = "/healthz"
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Write([]byte("ok"))
+}
+
 // withAuth guards the admin UI with HTTP basic auth when credentials are set.
 func (s *Server) withAuth(next http.Handler) http.Handler {
 	if s.opts.Username == "" && s.opts.Password == "" {
@@ -74,6 +84,10 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 	wantUser := []byte(s.opts.Username)
 	wantPass := []byte(s.opts.Password)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == healthPath {
+			next.ServeHTTP(w, r)
+			return
+		}
 		user, pass, ok := r.BasicAuth()
 		userOK := subtle.ConstantTimeCompare([]byte(user), wantUser) == 1
 		passOK := subtle.ConstantTimeCompare([]byte(pass), wantPass) == 1

@@ -8,3 +8,6 @@
 
 # build artifacts
 /info-parser
+
+# продакшин-секрети
+.env.production

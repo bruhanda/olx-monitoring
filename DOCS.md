@@ -268,6 +268,7 @@ basic auth, якщо задано облікові дані (порівнянн�
 | `/delete` | POST | `id` → пошук разом з оголошеннями |
 | `/deactivate` / `/activate` | POST | `id` → перемикання `Active` |
 | `/clear` | POST | `id` → `ClearListingsForSearchID` |
+| `/healthz` | GET | `200 ok`, в обхід basic auth — для проксі та моніторингу |
 
 Усі мутуючі хендлери приймають лише `POST` і завершуються редіректом
 `303 See Other` на `/`.

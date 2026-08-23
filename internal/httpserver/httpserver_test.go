@@ -159,3 +159,15 @@ func TestIndexShowsSchedule(t *testing.T) {
 		t.Fatal("configured schedule is not shown on the index page")
 	}
 }
+
+// The health endpoint must answer even when the admin UI is behind basic auth.
+func TestHealthzBypassesAuth(t *testing.T) {
+	for _, opts := range []Options{{}, {Username: "admin", Password: "s3cret"}} {
+		s, _ := newServer(t, opts)
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		if rec.Code != http.StatusOK || rec.Body.String() != "ok" {
+			t.Fatalf("healthz = %d %q (auth=%v)", rec.Code, rec.Body.String(), opts.Username != "")
+		}
+	}
+}

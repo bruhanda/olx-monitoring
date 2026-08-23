@@ -138,6 +138,12 @@ gofmt -l ./cmd ./internal   # має бути порожньо
 `Fetch`) і додайте його в `JobProvider` у `cmd/info-parser/main.go`.
 Покроково — у [DOCS.md](DOCS.md#5-як-додати-нове-джерело).
 
+## Деплой
+
+Готовий Docker-стек під Traefik: `Dockerfile`, `docker/docker-compose.prod.yml`
+і покрокова інструкція — [DEPLOY.md](DEPLOY.md). Health-check без авторизації:
+`GET /healthz`.
+
 ## Документація
 
 Архітектура, опис кожного пакета, життєвий цикл даних, відомі обмеження та
