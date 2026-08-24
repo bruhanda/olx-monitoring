@@ -139,6 +139,51 @@ func (s *Store) ClearListingsForSearchID(id uint) error {
 	return s.db.Where("search_id = ?", id).Delete(&Listing{}).Error
 }
 
+// ListListingsForSearch returns one page of listings collected for a saved
+// search, newest first, together with the total number of rows.
+func (s *Store) ListListingsForSearch(searchID uint, limit, offset int) ([]Listing, int64, error) {
+	var total int64
+	if err := s.db.Model(&Listing{}).Where("search_id = ?", searchID).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	var list []Listing
+	err := s.db.Where("search_id = ?", searchID).
+		Order("created_at DESC, id DESC").
+		Limit(limit).Offset(offset).
+		Find(&list).Error
+	if err != nil {
+		return nil, 0, err
+	}
+	return list, total, nil
+}
+
+// CountListingsBySearch returns how many listings are stored per saved search.
+func (s *Store) CountListingsBySearch() (map[uint]int64, error) {
+	type row struct {
+		SearchID uint
+		Total    int64
+	}
+	var rows []row
+	err := s.db.Model(&Listing{}).
+		Select("search_id, count(*) as total").
+		Group("search_id").
+		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	counts := make(map[uint]int64, len(rows))
+	for _, r := range rows {
+		counts[r.SearchID] = r.Total
+	}
+	return counts, nil
+}
+
 // DeactivateSearch sets a search as inactive.
 func (s *Store) DeactivateSearch(id uint) error {
 	return s.db.Model(&SavedSearch{}).Where("id = ?", id).Update("active", false).Error

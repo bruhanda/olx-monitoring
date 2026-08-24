@@ -31,9 +31,13 @@ func New(store *storage.Store, opts Options) *Server {
 }
 
 var (
-	indexTmpl = template.Must(template.New("index").Parse(indexTemplate))
-	editTmpl  = template.Must(template.New("edit").Parse(editTemplate))
+	indexTmpl    = template.Must(template.New("index").Parse(indexTemplate))
+	editTmpl     = template.Must(template.New("edit").Parse(editTemplate))
+	listingsTmpl = template.Must(template.New("listings").Parse(listingsTemplate))
 )
+
+// perPage — скільки оголошень показувати на сторінці /listings.
+const perPage = 50
 
 // Handler builds the admin router. It uses a dedicated mux instead of
 // http.DefaultServeMux and wraps it in optional basic auth.
@@ -46,6 +50,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/deactivate", s.deactivateSearchHandler)
 	mux.HandleFunc("/activate", s.activateSearchHandler)
 	mux.HandleFunc("/edit", s.editSearchHandler)
+	mux.HandleFunc("/listings", s.listingsHandler)
 	mux.HandleFunc(healthPath, healthHandler)
 	return s.withAuth(mux)
 }
@@ -121,11 +126,26 @@ func (s *Server) indexHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	counts, err := s.store.CountListingsBySearch()
+	if err != nil {
+		log.Printf("httpserver: failed to count listings: %v", err)
+		counts = map[uint]int64{} // сторінка корисна й без лічильників
+	}
+
+	type searchRow struct {
+		storage.SavedSearch
+		Listings int64
+	}
+	rows := make([]searchRow, 0, len(searches))
+	for _, sr := range searches {
+		rows = append(rows, searchRow{SavedSearch: sr, Listings: counts[sr.ID]})
+	}
+
 	data := struct {
-		Searches []storage.SavedSearch
+		Searches []searchRow
 		Schedule string
 	}{
-		Searches: searches,
+		Searches: rows,
 		Schedule: s.schedule(),
 	}
 
@@ -266,6 +286,81 @@ func (s *Server) editSearchHandler(w http.ResponseWriter, r *http.Request) {
 
 	default:
 		http.Error(w, "Метод не підтримується", http.StatusMethodNotAllowed)
+	}
+}
+
+// listingsHandler показує зібрані оголошення одного пошуку, найновіші зверху.
+func (s *Server) listingsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Метод не підтримується", http.StatusMethodNotAllowed)
+		return
+	}
+
+	id, err := formID(r, r.URL.Query().Get("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	search, err := s.store.GetSearchByID(id)
+	if errors.Is(err, storage.ErrSearchNotFound) {
+		http.Error(w, "Пошук не знайдено", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		log.Printf("httpserver: failed to load search %d: %v", id, err)
+		http.Error(w, "Помилка завантаження пошуку", http.StatusInternalServerError)
+		return
+	}
+
+	page := 1
+	if v := r.URL.Query().Get("page"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 1 {
+			page = n
+		}
+	}
+
+	items, total, err := s.store.ListListingsForSearch(id, perPage, (page-1)*perPage)
+	if err != nil {
+		log.Printf("httpserver: failed to list listings for %d: %v", id, err)
+		http.Error(w, "Помилка завантаження оголошень", http.StatusInternalServerError)
+		return
+	}
+
+	type listingRow struct {
+		storage.Listing
+		FirstSeen string
+	}
+	rows := make([]listingRow, 0, len(items))
+	for _, it := range items {
+		rows = append(rows, listingRow{Listing: it, FirstSeen: it.CreatedAt.Local().Format("02.01.2006 15:04")})
+	}
+
+	pages := int((total + perPage - 1) / perPage)
+	data := struct {
+		Search   storage.SavedSearch
+		Listings []listingRow
+		Total    int64
+		Page     int
+		Pages    int
+		HasPrev  bool
+		HasNext  bool
+		PrevPage int
+		NextPage int
+	}{
+		Search:   search,
+		Listings: rows,
+		Total:    total,
+		Page:     page,
+		Pages:    pages,
+		HasPrev:  page > 1,
+		HasNext:  page < pages,
+		PrevPage: page - 1,
+		NextPage: page + 1,
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := listingsTmpl.Execute(w, data); err != nil {
+		log.Printf("httpserver: failed to render listings: %v", err)
 	}
 }
 
@@ -586,6 +681,7 @@ const indexTemplate = `
                             <p>{{.URL}}</p>
                         </div>
                         <div class="search-actions">
+                            <a href="/listings?id={{.ID}}" class="btn">👁️ Оголошення ({{.Listings}})</a>
                             <a href="/edit?id={{.ID}}" class="btn btn-info">✏️ Редагувати</a>
                             <form method="POST" action="/clear" style="display: inline; width: 100%;">
                                 <input type="hidden" name="id" value="{{.ID}}">
@@ -722,6 +818,97 @@ const editTemplate = `
                 <button type="submit" class="btn">💾 Зберегти зміни</button>
                 <a href="/" class="btn btn-secondary">❌ Скасувати</a>
             </form>
+        </div>
+    </div>
+</body>
+</html>`
+
+const listingsTemplate = `
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Search.Name}} — зібрані оголошення</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 900px; margin: 0 auto; background: white;
+            border-radius: 15px; box-shadow: 0 20px 40px rgba(0,0,0,0.1); overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #0198d0 0%, #0077b3 100%);
+            color: white; padding: 25px 30px;
+        }
+        .header h1 { font-size: 1.8em; font-weight: 300; margin-bottom: 8px; }
+        .header a { color: #d6f1ff; word-break: break-all; font-size: 0.9em; }
+        .meta { padding: 15px 30px; background: #f8f9fa; border-bottom: 1px solid #e1e5e9;
+                display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
+        .meta strong { color: #0198d0; font-size: 1.1em; }
+        .content { padding: 20px 30px 30px; }
+        .listing {
+            border: 1px solid #e1e5e9; border-radius: 10px; padding: 15px;
+            margin-bottom: 12px; transition: border-color .2s ease, transform .2s ease;
+        }
+        .listing:hover { border-color: #0198d0; transform: translateY(-2px); }
+        .listing h3 { font-size: 1.05em; margin-bottom: 8px; }
+        .listing h3 a { color: #333; text-decoration: none; }
+        .listing h3 a:hover { color: #0198d0; }
+        .tags { display: flex; gap: 15px; flex-wrap: wrap; color: #666; font-size: .9em; }
+        .price { color: #28a745; font-weight: 600; }
+        .btn {
+            display: inline-block; background: linear-gradient(135deg, #0198d0 0%, #0077b3 100%);
+            color: white; border: none; padding: 10px 20px; border-radius: 8px;
+            font-size: 15px; font-weight: 600; cursor: pointer; text-decoration: none;
+        }
+        .btn-secondary { background: linear-gradient(135deg, #6c757d 0%, #545b62 100%); }
+        .pager { display: flex; justify-content: space-between; align-items: center; margin-top: 20px; gap: 10px; }
+        .empty { text-align: center; padding: 40px 20px; color: #666; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>👁️ {{.Search.Name}}</h1>
+            <a href="{{.Search.URL}}" target="_blank" rel="noopener">{{.Search.URL}}</a>
+        </div>
+
+        <div class="meta">
+            <div>Зібрано оголошень: <strong>{{.Total}}</strong>{{if gt .Pages 1}} · сторінка {{.Page}} з {{.Pages}}{{end}}</div>
+            <a href="/" class="btn btn-secondary">← До списку пошуків</a>
+        </div>
+
+        <div class="content">
+            {{if .Listings}}
+                {{range .Listings}}
+                <div class="listing">
+                    <h3><a href="{{.URL}}" target="_blank" rel="noopener">{{.Title}}</a></h3>
+                    <div class="tags">
+                        {{if .Price}}<span class="price">💰 {{.Price}}</span>{{end}}
+                        {{if .Location}}<span>📍 {{.Location}}</span>{{end}}
+                        <span>🕓 знайдено {{.FirstSeen}}</span>
+                    </div>
+                </div>
+                {{end}}
+
+                {{if gt .Pages 1}}
+                <div class="pager">
+                    {{if .HasPrev}}<a href="/listings?id={{$.Search.ID}}&page={{.PrevPage}}" class="btn">← Новіші</a>{{else}}<span></span>{{end}}
+                    {{if .HasNext}}<a href="/listings?id={{$.Search.ID}}&page={{.NextPage}}" class="btn">Старіші →</a>{{else}}<span></span>{{end}}
+                </div>
+                {{end}}
+            {{else}}
+                <div class="empty">
+                    <p>📭 Для цього пошуку ще нічого не зібрано.</p>
+                    <p>Оголошення з'являться тут після найближчої перевірки.</p>
+                </div>
+            {{end}}
         </div>
     </div>
 </body>

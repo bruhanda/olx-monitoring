@@ -1,12 +1,14 @@
 package httpserver
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bruhanda/olx-monitoring/internal/storage"
 )
@@ -169,5 +171,110 @@ func TestHealthzBypassesAuth(t *testing.T) {
 		if rec.Code != http.StatusOK || rec.Body.String() != "ok" {
 			t.Fatalf("healthz = %d %q (auth=%v)", rec.Code, rec.Body.String(), opts.Username != "")
 		}
+	}
+}
+
+func seedListings(t *testing.T, store *storage.Store, searchID uint, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		_, err := store.CreateListingIfNotExists(&storage.Listing{
+			SearchID:   searchID,
+			Source:     "olx",
+			ExternalID: fmt.Sprintf("id-%d", i),
+			Title:      fmt.Sprintf("Черевики <%d> & Co", i),
+			URL:        fmt.Sprintf("https://www.olx.ua/d/uk/obyavlenie/x-%d.html?a=1&b=2", i),
+			Price:      "5 000 грн",
+			Location:   "Київ, Поділ",
+			PostedAt:   time.Now(),
+		})
+		if err != nil {
+			t.Fatalf("seed listing: %v", err)
+		}
+	}
+}
+
+func TestListingsPage(t *testing.T) {
+	s, store := newServer(t, Options{})
+	if _, err := store.CreateSearchIfNotExists("Черевики Loake", "https://olx.ua/q-loake/", "olx", true); err != nil {
+		t.Fatalf("seed search: %v", err)
+	}
+	seedListings(t, store, 1, 3)
+
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/listings?id=1", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+
+	body := rec.Body.String()
+	for _, want := range []string{"Черевики Loake", "Зібрано оголошень:", ">3<", "5 000 грн", "Київ, Поділ", "знайдено "} {
+		if !strings.Contains(body, want) {
+			t.Errorf("сторінка не містить %q", want)
+		}
+	}
+	if strings.Contains(body, "<2> & Co") || strings.Contains(body, "a=1&b=2\"") {
+		t.Error("дані оголошення не екрановані")
+	}
+	if !strings.Contains(body, "&lt;2&gt; &amp; Co") {
+		t.Error("очікувалось екранування заголовка")
+	}
+}
+
+func TestListingsPagination(t *testing.T) {
+	s, store := newServer(t, Options{})
+	if _, err := store.CreateSearchIfNotExists("x", "https://olx.ua/q-x/", "olx", true); err != nil {
+		t.Fatalf("seed search: %v", err)
+	}
+	seedListings(t, store, 1, perPage+5)
+
+	first := httptest.NewRecorder()
+	s.Handler().ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/listings?id=1", nil))
+	if got := strings.Count(first.Body.String(), `class="listing"`); got != perPage {
+		t.Fatalf("на першій сторінці %d оголошень, очікувалось %d", got, perPage)
+	}
+	if !strings.Contains(first.Body.String(), "page=2") {
+		t.Error("немає переходу на другу сторінку")
+	}
+
+	second := httptest.NewRecorder()
+	s.Handler().ServeHTTP(second, httptest.NewRequest(http.MethodGet, "/listings?id=1&page=2", nil))
+	if got := strings.Count(second.Body.String(), `class="listing"`); got != 5 {
+		t.Fatalf("на другій сторінці %d оголошень, очікувалось 5", got)
+	}
+}
+
+func TestListingsUnknownSearchAndEmpty(t *testing.T) {
+	s, store := newServer(t, Options{})
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/listings?id=99", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("невідомий id → %d, очікувалось 404", rec.Code)
+	}
+
+	if _, err := store.CreateSearchIfNotExists("порожній", "https://olx.ua/q-empty/", "olx", true); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/listings?id=1", nil))
+	if !strings.Contains(rec.Body.String(), "ще нічого не зібрано") {
+		t.Error("немає повідомлення про порожній список")
+	}
+}
+
+func TestIndexShowsListingCounts(t *testing.T) {
+	s, store := newServer(t, Options{})
+	if _, err := store.CreateSearchIfNotExists("x", "https://olx.ua/q-x/", "olx", true); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	seedListings(t, store, 1, 7)
+
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, "Оголошення (7)") {
+		t.Error("на головній немає лічильника оголошень")
+	}
+	if !strings.Contains(body, "/listings?id=1") {
+		t.Error("на головній немає посилання на перегляд")
 	}
 }

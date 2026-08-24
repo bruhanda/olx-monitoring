@@ -120,6 +120,8 @@ API `*Store`:
 | `CreateListingIfNotExists(*Listing) (bool, error)` | вставка з дедуплікацією за `(source, external_id)`; `true` = оголошення нове |
 | `CreateSearchIfNotExists(name, url, source, active) (bool, error)` | вставка пошуку за унікальним `url` |
 | `ListActiveSearches(source)` / `ListAllSearches(source)` | вибірка пошуків, сортування за `id` |
+| `ListListingsForSearch(id, limit, offset)` | сторінка оголошень пошуку + загальна кількість |
+| `CountListingsBySearch()` | кількість оголошень на кожен пошук (для головної) |
 | `GetSearchByID(id)` | один пошук; `ErrSearchNotFound`, якщо немає |
 | `ActivateSearch(id)` / `DeactivateSearch(id)` | перемикання прапорця `Active` |
 | `UpdateSearch(id, name, url)` | редагування |
@@ -261,13 +263,14 @@ basic auth, якщо задано облікові дані (порівнянн�
 
 | Маршрут | Метод | Дія |
 |---|---|---|
-| `/` | GET | список усіх пошуків + форма додавання + актуальний розклад |
+| `/` | GET | список усіх пошуків із лічильником зібраних оголошень, форма додавання, розклад |
 | `/add` | POST | `name`, `url` → `CreateSearchIfNotExists` (URL має бути `http(s)://`) |
 | `/edit` | GET | форма редагування; єдиний параметр — `id`, значення беруться з БД |
 | `/edit` | POST | `id`, `name`, `url` → `UpdateSearch` |
 | `/delete` | POST | `id` → пошук разом з оголошеннями |
 | `/deactivate` / `/activate` | POST | `id` → перемикання `Active` |
 | `/clear` | POST | `id` → `ClearListingsForSearchID` |
+| `/listings` | GET | `id` (+ `page`) → зібрані оголошення пошуку, найновіші зверху, по 50 на сторінку |
 | `/healthz` | GET | `200 ok`, в обхід basic auth — для проксі та моніторингу |
 
 Усі мутуючі хендлери приймають лише `POST` і завершуються редіректом
