@@ -109,6 +109,57 @@ func TestRunSummary(t *testing.T) {
 	}
 }
 
+// Коли падають геть усі пошуки з однією й тією ж помилкою, у звіті має бути
+// один рядок, а не стіна з однакових.
+func TestRunSummaryGroupsIdenticalErrors(t *testing.T) {
+	now := time.Date(2026, 8, 24, 20, 0, 0, 0, time.UTC)
+	blocked := errors.New("unexpected status: 403")
+
+	var results []jobResult
+	for _, name := range []string{"Meermin", "Loake", "Solovair", "Red Wing", "Wolverine"} {
+		results = append(results, jobResult{label: name, err: blocked})
+	}
+	out := runSummary(now, results)
+
+	if strings.Count(out, "unexpected status: 403") != 1 {
+		t.Fatalf("помилка має згадуватись один раз:\n%s", out)
+	}
+	if !strings.Contains(out, "• усі пошуки: unexpected status: 403") {
+		t.Errorf("немає згорнутого рядка про всі пошуки:\n%s", out)
+	}
+	if !strings.Contains(out, "блокування за IP") {
+		t.Errorf("немає підказки про причину 403:\n%s", out)
+	}
+	for _, name := range []string{"Meermin", "Loake"} {
+		if strings.Contains(out, name) {
+			t.Errorf("назви пошуків зайві, коли впали всі: %s", out)
+		}
+	}
+}
+
+func TestRunSummaryGroupsPartialFailures(t *testing.T) {
+	now := time.Date(2026, 8, 24, 20, 0, 0, 0, time.UTC)
+	blocked := errors.New("unexpected status: 403")
+
+	results := []jobResult{
+		{label: "ok-1", new: 2},
+		{label: "a", err: blocked}, {label: "b", err: blocked},
+		{label: "c", err: blocked}, {label: "d", err: blocked},
+		{label: "e", err: errors.New("timeout")},
+	}
+	out := runSummary(now, results)
+
+	if !strings.Contains(out, "• 4 пошуків: unexpected status: 403") {
+		t.Errorf("однакові помилки не згорнуті:\n%s", out)
+	}
+	if !strings.Contains(out, "• e: timeout") {
+		t.Errorf("поодинока помилка має лишатись іменною:\n%s", out)
+	}
+	if !strings.Contains(out, "Помилок: 5") || !strings.Contains(out, "Нових оголошень: 2") {
+		t.Errorf("невірні підсумкові числа:\n%s", out)
+	}
+}
+
 // Розклад читається перед кожним очікуванням, а Reload() будить планувальник
 // одразу — інакше зміна з веб-адмінки застосувалась би лише після рестарту.
 func TestRunRereadsScheduleOnReload(t *testing.T) {

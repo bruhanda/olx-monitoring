@@ -266,26 +266,68 @@ func (s *Scheduler) send(text string) {
 }
 
 // runSummary renders the single wrap-up message sent after every run.
+// Однакові помилки групуються: під час блокування або аварії мережі всі
+// пошуки падають з одним і тим самим текстом, і перелічувати їх окремо
+// означало б надіслати стіну однакових рядків.
 func runSummary(now time.Time, results []jobResult) string {
 	totalNew := 0
-	var failed []jobResult
+	failed := 0
+	var order []string
+	byError := make(map[string][]string)
 	for _, r := range results {
 		totalNew += r.new
-		if r.err != nil {
-			failed = append(failed, r)
+		if r.err == nil {
+			continue
 		}
+		failed++
+		msg := r.err.Error()
+		if _, seen := byError[msg]; !seen {
+			order = append(order, msg)
+		}
+		byError[msg] = append(byError[msg], r.label)
 	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "🔄 <b>Перевірка %s</b>\nПошуків: %d\nНових оголошень: %d",
 		now.Format("02.01 15:04"), len(results), totalNew)
-	if len(failed) > 0 {
-		fmt.Fprintf(&b, "\nПомилок: %d", len(failed))
-		for _, r := range failed {
-			fmt.Fprintf(&b, "\n• %s: %s", escape(r.label), escape(r.err.Error()))
+	if failed == 0 {
+		return b.String()
+	}
+
+	fmt.Fprintf(&b, "\nПомилок: %d", failed)
+	for _, msg := range order {
+		labels := byError[msg]
+		switch {
+		case len(labels) == len(results) && len(results) > 1:
+			// Впали геть усі — назви пошуків нічого не додають.
+			fmt.Fprintf(&b, "\n• усі пошуки: %s", escape(msg))
+		case len(labels) > 3:
+			fmt.Fprintf(&b, "\n• %d пошуків: %s", len(labels), escape(msg))
+		default:
+			for _, label := range labels {
+				fmt.Fprintf(&b, "\n• %s: %s", escape(label), escape(msg))
+			}
+		}
+		if hint := errorHint(msg); hint != "" {
+			fmt.Fprintf(&b, "\n  <i>%s</i>", hint)
 		}
 	}
 	return b.String()
+}
+
+// errorHint додає підказку до типових збоїв, щоб не гадати над кодом помилки.
+func errorHint(msg string) string {
+	switch {
+	case strings.Contains(msg, "status: 403"):
+		return "OLX не пускає запити з цього сервера — схоже на блокування за IP"
+	case strings.Contains(msg, "status: 429"):
+		return "забагато запитів — варто рідший розклад"
+	case strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded"):
+		return "OLX не відповів вчасно"
+	case strings.Contains(msg, "no such host") || strings.Contains(msg, "connection refused"):
+		return "проблема з мережею на сервері"
+	}
+	return ""
 }
 
 func isAdItem(it parser.Item) bool {
