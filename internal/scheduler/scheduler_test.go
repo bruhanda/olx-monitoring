@@ -3,6 +3,7 @@ package scheduler
 import (
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -105,5 +106,94 @@ func TestRunSummary(t *testing.T) {
 		if !strings.Contains(noisy, want) {
 			t.Fatalf("summary %q is missing %q", noisy, want)
 		}
+	}
+}
+
+// Розклад читається перед кожним очікуванням, а Reload() будить планувальник
+// одразу — інакше зміна з веб-адмінки застосувалась би лише після рестарту.
+func TestRunRereadsScheduleOnReload(t *testing.T) {
+	var reads int32
+	getTimes := func() []string {
+		atomic.AddInt32(&reads, 1)
+		return []string{"03:00"} // далеко попереду, само не спрацює
+	}
+	var runs int32
+	jobs := func() ([]Job, error) {
+		atomic.AddInt32(&runs, 1)
+		return nil, nil
+	}
+
+	s := New(nil, nil, time.Hour, jobs).WithTimes(getTimes)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() { s.Run(stop); close(done) }()
+	defer func() {
+		close(stop)
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("Run() не завершився після stop")
+		}
+	}()
+
+	waitFor(t, &reads, 1, "розклад не прочитано на старті")
+
+	s.Reload()
+	waitFor(t, &reads, 2, "розклад не перечитано після Reload()")
+
+	if n := atomic.LoadInt32(&runs); n != 0 {
+		t.Fatalf("Reload() не має запускати перевірку, а прогонів %d", n)
+	}
+}
+
+// Без розкладу планувальник працює за інтервалом і робить перший прогін одразу
+// — на цьому тримається процедура прогріву бази з DEPLOY.md.
+func TestRunIntervalModeRunsImmediately(t *testing.T) {
+	var runs int32
+	jobs := func() ([]Job, error) {
+		atomic.AddInt32(&runs, 1)
+		return nil, nil
+	}
+	s := New(nil, nil, time.Hour, jobs).WithTimes(func() []string { return nil })
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() { s.Run(stop); close(done) }()
+
+	waitFor(t, &runs, 1, "у режимі інтервалу перший прогін має бути одразу")
+
+	close(stop)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run() не завершився після stop")
+	}
+}
+
+func waitFor(t *testing.T, counter *int32, want int32, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(counter) >= want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("%s (лічильник %d, очікувалось %d)", msg, atomic.LoadInt32(counter), want)
+}
+
+func TestReloadIsNonBlocking(t *testing.T) {
+	s := New(nil, nil, time.Hour, func() ([]Job, error) { return nil, nil })
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 100; i++ {
+			s.Reload() // ніхто не слухає — не має блокувати
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Reload() заблокувався без читача")
 	}
 }

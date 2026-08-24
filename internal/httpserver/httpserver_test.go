@@ -154,7 +154,7 @@ func TestBasicAuth(t *testing.T) {
 }
 
 func TestIndexShowsSchedule(t *testing.T) {
-	s, _ := newServer(t, Options{NotifyTimes: []string{"11:00", "15:00"}})
+	s, _ := newServer(t, Options{NotifyTimes: func() []string { return []string{"11:00", "15:00"} }})
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if !strings.Contains(rec.Body.String(), "11:00, 15:00") {
@@ -318,5 +318,76 @@ func TestClearOrphansEndpoint(t *testing.T) {
 	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clear-orphans", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("GET /clear-orphans = %d, want 405", rec.Code)
+	}
+}
+
+// Розклад редагується зі сторінки налаштувань і застосовується без рестарту.
+func TestSettingsPageSavesSchedule(t *testing.T) {
+	current := []string{"11:00", "15:00", "20:00"}
+	var saved []string
+	reloads := 0
+
+	s, _ := newServer(t, Options{
+		NotifyTimes: func() []string { return current },
+		SaveNotifyTimes: func(times []string) error {
+			saved = times
+			current = times
+			reloads++
+			return nil
+		},
+	})
+	h := s.Handler()
+
+	// GET показує поточні значення
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/settings", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /settings = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "11:00, 15:00, 20:00") {
+		t.Error("на сторінці немає поточного розкладу")
+	}
+
+	// POST зберігає, нормалізує і редіректить
+	rec = post(t, h, "/settings", url.Values{"times": {"9:5, 22:30, 09:05"}})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("POST /settings = %d, want 303", rec.Code)
+	}
+	if got := strings.Join(saved, ","); got != "09:05,22:30" {
+		t.Fatalf("збережено %q, очікувалось \"09:05,22:30\" (сортування + дублікати)", got)
+	}
+	if reloads != 1 {
+		t.Fatalf("планувальник розбуджено %d разів, очікувався 1", reloads)
+	}
+
+	// нові значення видно і на головній
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if !strings.Contains(rec.Body.String(), "09:05, 22:30") {
+		t.Error("головна показує старий розклад")
+	}
+	if !strings.Contains(rec.Body.String(), `href="/settings"`) {
+		t.Error("на головній немає кнопки переходу в налаштування")
+	}
+}
+
+func TestSettingsPageRejectsBadInput(t *testing.T) {
+	saveCalls := 0
+	s, _ := newServer(t, Options{
+		NotifyTimes:     func() []string { return []string{"11:00"} },
+		SaveNotifyTimes: func(times []string) error { saveCalls++; return nil },
+	})
+
+	for _, bad := range []string{"25:00", "щовечора", ""} {
+		rec := post(t, s.Handler(), "/settings", url.Values{"times": {bad}})
+		if rec.Code != http.StatusOK {
+			t.Errorf("POST %q = %d, очікувалась сторінка з помилкою (200)", bad, rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "alert-error") {
+			t.Errorf("для %q не показано помилку", bad)
+		}
+	}
+	if saveCalls != 0 {
+		t.Fatalf("некоректні дані було збережено (%d викликів)", saveCalls)
 	}
 }

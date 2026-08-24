@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +30,40 @@ type Config struct {
 
 	SeedPairs   [][2]string // optional seed pairs (name,url)
 	NotifyTimes []string    // times of day to send notifications (HH:MM format)
+}
+
+// ParseNotifyTimes розбирає список часів доби "11:00,15:00,20:00".
+// Використовується і при читанні env, і при збереженні розкладу з веб-форми,
+// щоб правила валідації були в одному місці. Приймає й скорочені форми
+// ("9:5" → "09:05"), повертає значення за зростанням і без дублікатів.
+func ParseNotifyTimes(raw string) ([]string, error) {
+	var times []string
+	seen := make(map[string]bool)
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ' ' || r == ';'
+	}) {
+		t := strings.TrimSpace(part)
+		if t == "" {
+			continue
+		}
+		hh, mm, ok := strings.Cut(t, ":")
+		if !ok {
+			return nil, fmt.Errorf("невірний час %q: очікується формат ГГ:ХХ, наприклад 09:30", t)
+		}
+		hour, err1 := strconv.Atoi(strings.TrimSpace(hh))
+		minute, err2 := strconv.Atoi(strings.TrimSpace(mm))
+		if err1 != nil || err2 != nil || hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+			return nil, fmt.Errorf("невірний час %q: години 0–23, хвилини 0–59", t)
+		}
+		norm := fmt.Sprintf("%02d:%02d", hour, minute)
+		if seen[norm] {
+			continue
+		}
+		seen[norm] = true
+		times = append(times, norm)
+	}
+	sort.Strings(times)
+	return times, nil
 }
 
 func getEnv(key, def string) string {

@@ -11,14 +11,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bruhanda/olx-monitoring/internal/config"
 	"github.com/bruhanda/olx-monitoring/internal/storage"
 )
 
 // Options configures the admin web UI.
 type Options struct {
-	NotifyTimes []string // schedule shown on the index page
-	Username    string   // HTTP basic auth user; empty disables authentication
-	Password    string
+	// NotifyTimes повертає поточний розклад перевірок. Викликається на кожен
+	// запит, щоб сторінки показували актуальні значення.
+	NotifyTimes func() []string
+	// SaveNotifyTimes зберігає новий розклад і будить планувальник.
+	SaveNotifyTimes func(times []string) error
+	Username        string // HTTP basic auth user; empty disables authentication
+	Password        string
 }
 
 type Server struct {
@@ -32,6 +37,7 @@ func New(store *storage.Store, opts Options) *Server {
 
 var (
 	indexTmpl    = template.Must(template.New("index").Parse(indexTemplate))
+	settingsTmpl = template.Must(template.New("settings").Parse(settingsTemplate))
 	editTmpl     = template.Must(template.New("edit").Parse(editTemplate))
 	listingsTmpl = template.Must(template.New("listings").Parse(listingsTemplate))
 )
@@ -52,6 +58,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/edit", s.editSearchHandler)
 	mux.HandleFunc("/listings", s.listingsHandler)
 	mux.HandleFunc("/clear-orphans", s.clearOrphansHandler)
+	mux.HandleFunc("/settings", s.settingsHandler)
 	mux.HandleFunc(healthPath, healthHandler)
 	return s.withAuth(mux)
 }
@@ -106,12 +113,71 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 	})
 }
 
+// notifyTimes returns the current schedule, tolerating an unset provider.
+func (s *Server) notifyTimes() []string {
+	if s.opts.NotifyTimes == nil {
+		return nil
+	}
+	return s.opts.NotifyTimes()
+}
+
 // schedule renders the configured notification times for the index page.
 func (s *Server) schedule() string {
-	if len(s.opts.NotifyTimes) == 0 {
+	times := s.notifyTimes()
+	if len(times) == 0 {
 		return "постійно, за інтервалом опитування"
 	}
-	return strings.Join(s.opts.NotifyTimes, ", ")
+	return strings.Join(times, ", ")
+}
+
+// settingsHandler показує і зберігає налаштування розкладу.
+func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
+	data := struct {
+		Times   string
+		Preview string
+		Error   string
+		Saved   bool
+	}{
+		Times:   strings.Join(s.notifyTimes(), ", "),
+		Preview: s.schedule(),
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		data.Saved = r.URL.Query().Get("saved") == "1"
+
+	case http.MethodPost:
+		raw := r.FormValue("times")
+		data.Times = raw
+
+		times, err := config.ParseNotifyTimes(raw)
+		switch {
+		case err != nil:
+			data.Error = err.Error()
+		case len(times) == 0:
+			data.Error = "вкажіть хоча б один час, наприклад 11:00, 15:00, 20:00"
+		case s.opts.SaveNotifyTimes == nil:
+			data.Error = "збереження розкладу недоступне"
+		default:
+			if err := s.opts.SaveNotifyTimes(times); err != nil {
+				log.Printf("httpserver: failed to save schedule: %v", err)
+				data.Error = fmt.Sprintf("не вдалося зберегти: %v", err)
+			} else {
+				log.Printf("httpserver: розклад змінено на %s", strings.Join(times, ", "))
+				http.Redirect(w, r, "/settings?saved=1", http.StatusSeeOther)
+				return
+			}
+		}
+
+	default:
+		http.Error(w, "Метод не підтримується", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := settingsTmpl.Execute(w, data); err != nil {
+		log.Printf("httpserver: failed to render settings: %v", err)
+	}
 }
 
 func (s *Server) indexHandler(w http.ResponseWriter, r *http.Request) {
@@ -669,6 +735,10 @@ const indexTemplate = `
         </div>
         
         <div class="content">
+            <div style="text-align: right; margin-bottom: 20px;">
+                <a href="/settings" class="btn btn-secondary">⚙️ Налаштування розкладу</a>
+            </div>
+
             <div class="info-box">
                 <h3>📋 Як це працює:</h3>
                 <ul>
@@ -945,6 +1015,84 @@ const listingsTemplate = `
                     <p>Оголошення з'являться тут після найближчої перевірки.</p>
                 </div>
             {{end}}
+        </div>
+    </div>
+</body>
+</html>`
+
+const settingsTemplate = `
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Налаштування</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh; padding: 20px;
+        }
+        .container {
+            max-width: 700px; margin: 0 auto; background: white;
+            border-radius: 15px; box-shadow: 0 20px 40px rgba(0,0,0,0.1); overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #0198d0 0%, #0077b3 100%);
+            color: white; padding: 30px; text-align: center;
+        }
+        .header h1 { font-size: 2em; font-weight: 300; }
+        .content { padding: 30px; }
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; margin-bottom: 8px; font-weight: 600; color: #555; }
+        .form-group input[type="text"] {
+            width: 100%; padding: 12px 15px; border: 2px solid #e1e5e9;
+            border-radius: 8px; font-size: 16px; transition: border-color .3s ease;
+        }
+        .form-group input[type="text"]:focus {
+            outline: none; border-color: #0198d0; box-shadow: 0 0 0 3px rgba(1,152,208,.1);
+        }
+        .hint { color: #666; font-size: .9em; margin-top: 8px; line-height: 1.5; }
+        .btn {
+            display: inline-block; background: linear-gradient(135deg, #0198d0 0%, #0077b3 100%);
+            color: white; border: none; padding: 12px 25px; border-radius: 8px;
+            font-size: 16px; font-weight: 600; cursor: pointer; text-decoration: none; margin-right: 10px;
+        }
+        .btn-secondary { background: linear-gradient(135deg, #6c757d 0%, #545b62 100%); }
+        .alert { padding: 15px 20px; border-radius: 10px; margin-bottom: 25px; }
+        .alert-error { background: #f8d7da; color: #842029; border: 1px solid #f5c2c7; }
+        .alert-ok { background: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; }
+        .current { background: #f8f9fa; border-radius: 10px; padding: 20px; margin-bottom: 25px; }
+        .current strong { color: #0198d0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header"><h1>⚙️ Налаштування</h1></div>
+        <div class="content">
+            {{if .Saved}}<div class="alert alert-ok">✅ Розклад збережено і вже застосований — перезапуск не потрібен.</div>{{end}}
+            {{if .Error}}<div class="alert alert-error">⚠️ {{.Error}}</div>{{end}}
+
+            <div class="current">
+                Поточний розклад перевірок: <strong>{{.Preview}}</strong>
+            </div>
+
+            <form method="POST" action="/settings">
+                <div class="form-group">
+                    <label for="times">Час перевірок (за київським часом):</label>
+                    <input type="text" id="times" name="times" value="{{.Times}}"
+                           placeholder="11:00, 15:00, 20:00" required>
+                    <div class="hint">
+                        Кілька значень через кому, формат ГГ:ХХ. Наприклад:
+                        <code>08:30, 13:00, 19:45</code>.<br>
+                        У кожен із цих моментів сервіс обходить усі активні пошуки
+                        і надсилає в Telegram лише нові оголошення.
+                    </div>
+                </div>
+                <button type="submit" class="btn">💾 Зберегти</button>
+                <a href="/" class="btn btn-secondary">← До списку пошуків</a>
+            </form>
         </div>
     </div>
 </body>

@@ -38,6 +38,17 @@ type SavedSearch struct {
 	Source string `gorm:"size:32;not null;default:'olx'"`
 }
 
+// Setting зберігає налаштування, які редагуються через веб-адмінку і мають
+// переживати перезапуск (env лишається значенням за замовчуванням).
+type Setting struct {
+	Key       string `gorm:"primaryKey;size:64"`
+	Value     string `gorm:"size:512"`
+	UpdatedAt time.Time
+}
+
+// SettingNotifyTimes — розклад перевірок, "11:00,15:00,20:00".
+const SettingNotifyTimes = "notify_times"
+
 type Store struct {
 	db *gorm.DB
 }
@@ -47,7 +58,7 @@ func Open(databasePath string) *Store {
 	if err != nil {
 		log.Fatalf("failed to open database: %v", err)
 	}
-	if err := db.AutoMigrate(&Listing{}, &SavedSearch{}); err != nil {
+	if err := db.AutoMigrate(&Listing{}, &SavedSearch{}, &Setting{}); err != nil {
 		log.Fatalf("failed to migrate database: %v", err)
 	}
 	return &Store{db: db}
@@ -90,6 +101,24 @@ func (s *Store) CreateSearchIfNotExists(name, url, source string, active bool) (
 		return false, err
 	}
 	return true, nil
+}
+
+// GetSetting returns a stored setting; ok is false when it was never set.
+func (s *Store) GetSetting(key string) (value string, ok bool, err error) {
+	var rec Setting
+	tx := s.db.Where("key = ?", key).First(&rec)
+	if errors.Is(tx.Error, gorm.ErrRecordNotFound) {
+		return "", false, nil
+	}
+	if tx.Error != nil {
+		return "", false, tx.Error
+	}
+	return rec.Value, true, nil
+}
+
+// SetSetting stores a setting, overwriting any previous value.
+func (s *Store) SetSetting(key, value string) error {
+	return s.db.Save(&Setting{Key: key, Value: value}).Error
 }
 
 // ListActiveSearches returns active searches for a source.

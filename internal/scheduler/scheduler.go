@@ -36,12 +36,21 @@ type Scheduler struct {
 	interval  time.Duration
 	baseDelay time.Duration
 	jitter    time.Duration
-	times     []string
+	times     func() []string
 	limit     int
+	reload    chan struct{}
 }
 
 func New(store *storage.Store, notifier *notifier.Telegram, interval time.Duration, jobs JobProvider) *Scheduler {
-	return &Scheduler{store: store, notifier: notifier, jobs: jobs, interval: interval, limit: defaultLimit}
+	return &Scheduler{
+		store:    store,
+		notifier: notifier,
+		jobs:     jobs,
+		interval: interval,
+		limit:    defaultLimit,
+		times:    func() []string { return nil },
+		reload:   make(chan struct{}, 1),
+	}
 }
 
 func (s *Scheduler) WithDelays(baseDelay, jitter time.Duration) *Scheduler {
@@ -58,37 +67,60 @@ func (s *Scheduler) WithLimit(limit int) *Scheduler {
 	return s
 }
 
-func (s *Scheduler) AtTimes(times []string) *Scheduler {
-	s.times = append([]string(nil), times...)
-	sort.Strings(s.times)
+// WithTimes задає джерело розкладу. Провайдер викликається перед кожним
+// очікуванням, тож зміни з веб-адмінки застосовуються без рестарту.
+func (s *Scheduler) WithTimes(times func() []string) *Scheduler {
+	if times != nil {
+		s.times = times
+	}
 	return s
 }
 
-func (s *Scheduler) Run(stop <-chan struct{}) {
-	if len(s.times) == 0 {
-		// Fallback to interval-based
-		ticker := time.NewTicker(s.interval)
-		defer ticker.Stop()
-		s.runOnce()
-		for {
-			select {
-			case <-ticker.C:
-				s.runOnce()
-			case <-stop:
-				return
-			}
-		}
-	}
+// AtTimes — зручна обгортка для сталого розкладу (тести, простий запуск).
+func (s *Scheduler) AtTimes(times []string) *Scheduler {
+	fixed := append([]string(nil), times...)
+	sort.Strings(fixed)
+	return s.WithTimes(func() []string { return fixed })
+}
 
+// Reload будить планувальник, щоб він перечитав розклад негайно.
+// Безпечно викликати з будь-якої горутини; зайві сигнали відкидаються.
+func (s *Scheduler) Reload() {
+	select {
+	case s.reload <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Scheduler) Run(stop <-chan struct{}) {
+	first := true
 	for {
-		// Sleep until next scheduled time
-		now := time.Now()
-		next := nextOccurrence(now, s.times)
-		log.Printf("scheduler: next run at %s", next.Format("2006-01-02 15:04"))
-		t := time.NewTimer(time.Until(next))
+		times := s.times()
+
+		var wait time.Duration
+		switch {
+		case len(times) == 0 && first:
+			// Режим інтервалу: перший прогін одразу після старту.
+			wait = 0
+		case len(times) == 0:
+			wait = s.interval
+		default:
+			next := nextOccurrence(time.Now(), times)
+			wait = time.Until(next)
+			log.Printf("scheduler: розклад %s, наступний запуск %s",
+				strings.Join(times, ", "), next.Format("2006-01-02 15:04"))
+		}
+		first = false
+
+		t := time.NewTimer(wait)
 		select {
 		case <-t.C:
 			s.runOnce()
+		case <-s.reload:
+			if !t.Stop() {
+				<-t.C
+			}
+			log.Printf("scheduler: розклад змінено, перераховую")
 		case <-stop:
 			if !t.Stop() {
 				<-t.C

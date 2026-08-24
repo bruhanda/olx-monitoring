@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	cfgpkg "github.com/bruhanda/olx-monitoring/internal/config"
@@ -42,17 +43,32 @@ func main() {
 		}
 	}
 
-	// Start HTTP server
-	httpServer := httpserver.New(store, httpserver.Options{
-		NotifyTimes: cfg.NotifyTimes,
-		Username:    cfg.HTTPUser,
-		Password:    cfg.HTTPPassword,
-	})
-	go func() {
-		if err := httpServer.Start(cfg.HTTPAddr); err != nil {
-			log.Printf("HTTP server error: %v", err)
+	// Розклад живе в базі, щоб його можна було міняти з веб-адмінки; env
+	// лишається значенням за замовчуванням для першого запуску.
+	if _, ok, err := store.GetSetting(storage.SettingNotifyTimes); err != nil {
+		log.Printf("failed to read schedule setting: %v", err)
+	} else if !ok {
+		if err := store.SetSetting(storage.SettingNotifyTimes, strings.Join(cfg.NotifyTimes, ",")); err != nil {
+			log.Printf("failed to seed schedule setting: %v", err)
 		}
-	}()
+	}
+
+	notifyTimes := func() []string {
+		raw, ok, err := store.GetSetting(storage.SettingNotifyTimes)
+		if err != nil {
+			log.Printf("failed to read schedule: %v", err)
+			return cfg.NotifyTimes
+		}
+		if !ok {
+			return cfg.NotifyTimes
+		}
+		times, err := cfgpkg.ParseNotifyTimes(raw)
+		if err != nil {
+			log.Printf("stored schedule %q is invalid, falling back to env: %v", raw, err)
+			return cfg.NotifyTimes
+		}
+		return times
+	}
 
 	httpClient := &http.Client{Timeout: cfg.RequestTimeout}
 
@@ -76,7 +92,26 @@ func main() {
 	sched := scheduler.New(store, tg, cfg.PollInterval, jobs).
 		WithDelays(cfg.RequestDelay, cfg.RequestJitter).
 		WithLimit(cfg.MaxItemsPerRun).
-		AtTimes(cfg.NotifyTimes)
+		WithTimes(notifyTimes)
+
+	// Start HTTP server
+	httpServer := httpserver.New(store, httpserver.Options{
+		NotifyTimes: notifyTimes,
+		SaveNotifyTimes: func(times []string) error {
+			if err := store.SetSetting(storage.SettingNotifyTimes, strings.Join(times, ",")); err != nil {
+				return err
+			}
+			sched.Reload() // застосувати новий розклад без рестарту
+			return nil
+		},
+		Username: cfg.HTTPUser,
+		Password: cfg.HTTPPassword,
+	})
+	go func() {
+		if err := httpServer.Start(cfg.HTTPAddr); err != nil {
+			log.Printf("HTTP server error: %v", err)
+		}
+	}()
 
 	stop := make(chan struct{})
 	sigs := make(chan os.Signal, 1)
