@@ -278,3 +278,45 @@ func TestIndexShowsListingCounts(t *testing.T) {
 		t.Error("на головній немає посилання на перегляд")
 	}
 }
+
+func TestClearOrphansEndpoint(t *testing.T) {
+	s, store := newServer(t, Options{})
+	if _, err := store.CreateSearchIfNotExists("x", "https://olx.ua/q-x/", "olx", true); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	seedListings(t, store, 1, 2)
+	if _, err := store.CreateListingIfNotExists(&storage.Listing{Source: "olx", ExternalID: "orphan"}); err != nil {
+		t.Fatalf("seed orphan: %v", err)
+	}
+
+	// на головній видно блок із лічильником
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if !strings.Contains(rec.Body.String(), "Старі записи без прив'язки: 1") {
+		t.Error("на головній немає блоку про осиротілі записи")
+	}
+
+	if rec := post(t, s.Handler(), "/clear-orphans", url.Values{}); rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", rec.Code)
+	}
+
+	if n, _ := store.CountOrphanListings(); n != 0 {
+		t.Fatalf("після виклику лишилось %d осиротілих", n)
+	}
+	// прив'язані записи не постраждали
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, "Оголошення (2)") {
+		t.Error("прив'язані оголошення зникли")
+	}
+	if strings.Contains(body, "Старі записи без прив'язки") {
+		t.Error("блок про осиротілі записи лишився після очищення")
+	}
+
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clear-orphans", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /clear-orphans = %d, want 405", rec.Code)
+	}
+}

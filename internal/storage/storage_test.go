@@ -138,3 +138,44 @@ func TestSearchLifecycle(t *testing.T) {
 		t.Fatalf("active = %+v, err = %v", active, err)
 	}
 }
+
+// Записи, створені до появи SearchID, лежать із NULL і не показуються на
+// жодній сторінці пошуку — їх має бути видно як «осиротілі» й можна прибрати.
+func TestOrphanListings(t *testing.T) {
+	s := newStore(t)
+	if _, err := s.CreateSearchIfNotExists("x", "https://olx.ua/q-x/", "olx", true); err != nil {
+		t.Fatalf("create search: %v", err)
+	}
+	// прив'язаний запис
+	if _, err := s.CreateListingIfNotExists(&Listing{SearchID: 1, Source: "olx", ExternalID: "bound"}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	// запис із SearchID=0 і запис із NULL (як після AutoMigrate старої бази)
+	if _, err := s.CreateListingIfNotExists(&Listing{Source: "olx", ExternalID: "zero"}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := s.db.Exec("insert into listings (source, external_id, search_id) values (?, ?, null)", "olx", "legacy").Error; err != nil {
+		t.Fatalf("insert legacy: %v", err)
+	}
+
+	count, err := s.CountOrphanListings()
+	if err != nil || count != 2 {
+		t.Fatalf("CountOrphanListings = %d, err = %v, want 2", count, err)
+	}
+
+	deleted, err := s.DeleteOrphanListings()
+	if err != nil || deleted != 2 {
+		t.Fatalf("DeleteOrphanListings = %d, err = %v, want 2", deleted, err)
+	}
+
+	count, _ = s.CountOrphanListings()
+	if count != 0 {
+		t.Fatalf("після видалення лишилось %d осиротілих", count)
+	}
+
+	var total int64
+	s.db.Model(&Listing{}).Count(&total)
+	if total != 1 {
+		t.Fatalf("всього записів %d, очікувався 1 (прив'язаний не чіпаємо)", total)
+	}
+}

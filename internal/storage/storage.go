@@ -184,6 +184,25 @@ func (s *Store) CountListingsBySearch() (map[uint]int64, error) {
 	return counts, nil
 }
 
+// orphanCondition matches listings that are not attached to any saved search.
+// Rows created before SearchID existed carry NULL, newer stray rows carry 0.
+const orphanCondition = "search_id is null or search_id = 0"
+
+// CountOrphanListings returns how many listings have no owning search.
+func (s *Store) CountOrphanListings() (int64, error) {
+	var total int64
+	err := s.db.Model(&Listing{}).Where(orphanCondition).Count(&total).Error
+	return total, err
+}
+
+// DeleteOrphanListings removes listings that belong to no saved search and
+// reports how many rows were deleted. Such rows cannot be shown per search,
+// so they only take space once their listings have left the search results.
+func (s *Store) DeleteOrphanListings() (int64, error) {
+	tx := s.db.Where(orphanCondition).Delete(&Listing{})
+	return tx.RowsAffected, tx.Error
+}
+
 // DeactivateSearch sets a search as inactive.
 func (s *Store) DeactivateSearch(id uint) error {
 	return s.db.Model(&SavedSearch{}).Where("id = ?", id).Update("active", false).Error

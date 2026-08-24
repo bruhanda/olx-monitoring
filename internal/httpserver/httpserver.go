@@ -51,6 +51,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/activate", s.activateSearchHandler)
 	mux.HandleFunc("/edit", s.editSearchHandler)
 	mux.HandleFunc("/listings", s.listingsHandler)
+	mux.HandleFunc("/clear-orphans", s.clearOrphansHandler)
 	mux.HandleFunc(healthPath, healthHandler)
 	return s.withAuth(mux)
 }
@@ -141,12 +142,19 @@ func (s *Server) indexHandler(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, searchRow{SavedSearch: sr, Listings: counts[sr.ID]})
 	}
 
+	orphans, err := s.store.CountOrphanListings()
+	if err != nil {
+		log.Printf("httpserver: failed to count orphan listings: %v", err)
+	}
+
 	data := struct {
 		Searches []searchRow
 		Schedule string
+		Orphans  int64
 	}{
 		Searches: rows,
 		Schedule: s.schedule(),
+		Orphans:  orphans,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -287,6 +295,21 @@ func (s *Server) editSearchHandler(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Метод не підтримується", http.StatusMethodNotAllowed)
 	}
+}
+
+// clearOrphansHandler видаляє оголошення, які не належать жодному пошуку.
+func (s *Server) clearOrphansHandler(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
+	deleted, err := s.store.DeleteOrphanListings()
+	if err != nil {
+		log.Printf("httpserver: failed to delete orphan listings: %v", err)
+		http.Error(w, fmt.Sprintf("Помилка видалення: %v", err), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("httpserver: deleted %d orphan listings", deleted)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 // listingsHandler показує зібрані оголошення одного пошуку, найновіші зверху.
@@ -673,6 +696,19 @@ const indexTemplate = `
             
             <div class="searches-section">
                 <h2>📋 Активні пошуки</h2>
+                {{if .Orphans}}
+                <div class="search-item">
+                    <div class="search-info">
+                        <h3>🗂️ Старі записи без прив'язки: {{.Orphans}}</h3>
+                        <p>Зібрані до появи зв'язку «оголошення → пошук». Працюють лише на дедуплікацію, переглянути їх не можна.</p>
+                    </div>
+                    <div class="search-actions">
+                        <form method="POST" action="/clear-orphans" style="display: inline; width: 100%;">
+                            <button type="submit" class="btn btn-danger" onclick="return confirm('Видалити {{.Orphans}} старих записів без прив\'язки? Дію не скасувати.')">🧹 Видалити {{.Orphans}} записів</button>
+                        </form>
+                    </div>
+                </div>
+                {{end}}
                 {{if .Searches}}
                     {{range .Searches}}
                     <div class="search-item">
